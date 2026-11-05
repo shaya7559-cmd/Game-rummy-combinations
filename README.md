@@ -4,7 +4,7 @@
 היא בנויה מ-HTML, CSS ו-JavaScript רגילים, בלי שלב בנייה, ומתארחת ב-GitHub Pages.
 נקודת ההתחלה היא עותק של אפליקציית רמי 51 (מאגר `Game-rummy51`).
 
-> **מצב:** הכללים, מסך המשחק והדוחות הותאמו לרמי קומבינציות, וכל הבדיקות ב-`tests.html` עוברות. האפליקציה עוד לא הועלתה ל-GitHub Pages.
+> **מצב:** האפליקציה באוויר בכתובת <https://shaya7559-cmd.github.io/Game-rummy-combinations/>. כל הבדיקות ב-`tests.html` עוברות.
 
 **מילים:** **ערב** = כל המפגש, מההתחלה ועד שמסיימים. **משחק** = יד אחת, מהחלוקה ועד שמישהו סוגר.
 בקוד, אובייקט `game` הוא ערב, ו-`rounds` הם המשחקים שלו.
@@ -34,22 +34,12 @@
 שתי האפליקציות נמצאות תחת `shaya7559-cmd.github.io` ולכן חולקות את האחסון בדפדפן.
 האפליקציה הזו שומרת תחת המפתחות `rummycombos.v1` ו-`rummycombos.github`, כדי לא לדרוס את הנתונים של רמי 51.
 
-## העלאה ל-GitHub Pages
-1. ב-<https://github.com/new> יוצרים מאגר **ציבורי** בשם `Game-rummy-combinations`, בלי README.
-2. מתוך התיקייה הזו:
-   ```bash
-   git init
-   git add .
-   git commit -m "Rummy Combos scorekeeper"
-   git branch -M main
-   git remote add origin https://github.com/shaya7559-cmd/Game-rummy-combinations.git
-   git push -u origin main
-   ```
-3. במאגר: ‏**Settings → Pages → Build and deployment → Deploy from a branch → `main` / `(root)` → Save**.
-4. אחרי כדקה האפליקציה זמינה בכתובת `https://shaya7559-cmd.github.io/Game-rummy-combinations/`.
+## עדכון האתר
+- המאגר הציבורי `shaya7559-cmd/Game-rummy-combinations` מפורסם ב-GitHub Pages מהענף `main`, מהתיקייה הראשית (**Settings → Pages → Deploy from a branch → `main` / `(root)`**).
+- כל שינוי עולה לאתר כך: ב-GitHub Desktop ‏**Commit to main** ואז **Push origin**. אחרי דקה או שתיים, בלשונית **Actions** של המאגר מופיע ✓ ירוק ליד `pages build and deployment`, והאתר מעודכן.
 
-## שמירת המשחקים בגיט
-המשחקים נשמרים במאגר נתונים **נפרד ופרטי**, שהוא לא המאגר של רמי 51.
-1. יוצרים מאגר פרטי, למשל `rummy-combos-data`, עם README.
-2. יוצרים Fine-grained token שיש לו גישה **רק** למאגר הזה, עם ההרשאה **Contents: Read and write**.
-3. באפליקציה: **גיט וגיבוי** ← מזינים `shaya7559-cmd/rummy-combos-data` ואת הטוקן ← **חבר ובדוק**.
+## שמירת הערבים בגיט
+הערבים נשמרים במאגר נתונים **נפרד ופרטי**: `shaya7559-cmd/RummyCombos-data`.
+- עותק שלו במחשב נמצא ב-`ClaudeWorkFolder\RummyCombos-data`, ליד התיקייה של האפליקציה ולא בתוכה. הוא מתעדכן ב-GitHub Desktop עם **Fetch origin** ואז **Pull origin**.
+- לאפליקציה יש Fine-grained token שיש לו גישה **רק** למאגר הזה, עם ההרשאה **Contents: Read and write**.
+- בכל טלפון, פעם אחת: **גיט וגיבוי** ← מזינים `shaya7559-cmd/RummyCombos-data` ואת הטוקן ← **חבר ובדוק**.
