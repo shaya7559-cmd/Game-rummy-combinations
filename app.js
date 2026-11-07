@@ -74,7 +74,7 @@
   let toastTimer = null;
   function toast(msg) {
     const t = document.getElementById('toast');
-    t.textContent = msg;
+    t.textContent = msg.replace(/[+-]?\d+/g, (m) => '\u2066' + m + '\u2069'); // +30 / -10 stay as written inside Hebrew
     t.classList.add('show');
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
@@ -420,7 +420,7 @@
         <div class="hist-top"><b class="tour-title">${esc(t.name)}</b><span>${side}</span></div>
         ${t.finishedAt && winners.length ? `<div class="hist-winner">🏆 ${esc(andList(winners))}</div>` : ''}
         <ol class="mini-rank">${rows.map((r) => `<li>${r.place}. ${esc(r.player.name)} <b class="num">${r.total}</b></li>`).join('')}</ol>
-        <div class="muted tour-line">${played ? playedText(played) : 'עוד לא הסתיים משחק'} · ${t.players.length} משתתפים</div>
+        <div class="muted tour-line">${played ? playedText(played) : 'עוד לא הסתיים משחק'} · ${t.players.length} משתתפים${cur && !t.finishedAt ? ' · מחלק: ' + esc(playerName(t, R.dealerOf(t, cur))) : ''}</div>
       </button>`;
   }
 
@@ -449,6 +449,7 @@
     const rows = view.names.map((n, i) => `
       <li>
         <input class="pname" data-i="${i}" value="${esc(n)}" placeholder="משתתף ${i + 1}" list="known-names" maxlength="20" autocomplete="off" enterkeyhint="next">
+        <button class="deal-chip${view.firstDealer === i ? ' on' : ''}" data-act="pick-dealer" data-i="${i}" aria-pressed="${view.firstDealer === i}">מחלק</button>
         <button class="btn icon danger" data-act="remove-player" data-i="${i}" aria-label="הסר"${view.names.length <= MIN_PLAYERS ? ' disabled' : ''}>✕</button>
       </li>`).join('');
     return `
@@ -461,7 +462,8 @@
       <ul class="player-list">${rows}</ul>
       <datalist id="known-names">${known.map((n) => `<option value="${esc(n)}">`).join('')}</datalist>
       ${view.names.length < MAX_PLAYERS ? '<button class="btn block" data-act="add-player">+ הוסף משתתף</button>' : ''}
-      <p class="muted" style="margin-top:12px">אין מספר משחקים קבוע: משחקים כמה שרוצים ומסיימים את הטורניר מתי שמחליטים. אפשר גם להשאיר אותו פתוח ולהמשיך בפעם הבאה.</p>
+      <p class="muted" style="margin-top:12px">"מחלק" מסמן מי מחלק במשחק הראשון. בכל משחק הבא מחלק המשתתף הבא ברשימה.</p>
+      <p class="muted">אין מספר משחקים קבוע: משחקים כמה שרוצים ומסיימים את הטורניר מתי שמחליטים. אפשר גם להשאיר אותו פתוח ולהמשיך בפעם הבאה.</p>
       <button class="btn primary big" data-act="start-tour">התחל טורניר</button>
       <p class="error" id="setup-error"></p>`;
   };
@@ -473,12 +475,14 @@
   function startSetup(list) {
     const ns = (list || []).slice(0, MAX_PLAYERS);
     while (ns.length < MIN_PLAYERS) ns.push('');
-    go('new-tour', { names: ns, tourName: '' });
+    go('new-tour', { names: ns, tourName: '', firstDealer: 0 });
   }
 
   function removePlayer(i) {
     if (view.names.length <= MIN_PLAYERS) return;
     view.names.splice(i, 1);
+    if (view.firstDealer === i) view.firstDealer = 0;
+    else if (view.firstDealer > i) view.firstDealer--;
     render();
   }
 
@@ -493,7 +497,7 @@
       else if (T.findByName(state.tournaments, name)) err = `כבר יש טורניר בשם "${name}". בחר שם אחר.`;
     }
     if (err) { document.getElementById('setup-error').textContent = err; return; }
-    const t = R.newTournament(name, ns);
+    const t = R.newTournament(name, ns, view.firstDealer);
     state.tournaments.push(t);
     state.lastPlayers = ns;
     state.lastTournamentId = t.id;
@@ -509,23 +513,27 @@
   // ---------- tournament screen ----------
   // One row per participant, highest total first. The total includes the game being played,
   // so the order changes as points come in.
-  function boardRow(t, g, r, lead) {
+  // Tapping the name opens the participant's entries in this game for fixing.
+  function boardRow(t, g, r, lead, dealerId) {
     const p = r.player;
     const gp = R.gamePoints(g, p.id);
     const ent = R.entriesOf(g, p.id);
     const cls = ['prow', lead ? 'lead' : '', p.id === flashPid ? 'flash' : ''].join(' ').trim();
+    // second line: the dealer mark, then this game's entries (on a narrow phone the name keeps the first line)
+    const sub = (p.id === dealerId ? '<span class="deal-mark">מחלק</span>' : '') +
+      (ent.length ? `<span class="entries">${ent.map((n) => `<span${n < 0 ? ' class="neg"' : ''}>${signed(n)}</span>`).join('')}</span>` : '');
+    const who = `
+          <span class="nm"><b>${esc(p.name)}</b>${r.wins ? `<span class="wins" title="${winsText(r.wins)}">🏆<span class="num">${r.wins}</span></span>` : ''}</span>
+          ${sub ? `<small class="sub">${sub}</small>` : ''}`;
     return `
       <div class="${cls}" data-flip="${p.id}">
         <span class="place">${r.place}</span>
-        <span class="who">
-          <span class="nm"><b>${esc(p.name)}</b>${r.wins ? `<span class="wins" title="${winsText(r.wins)}">🏆<span class="num">${r.wins}</span></span>` : ''}</span>
-          ${ent.length ? `<small class="entries">${ent.map((n) => `<span${n < 0 ? ' class="neg"' : ''}>${signed(n)}</span>`).join('')}</small>` : ''}
-        </span>
+        ${ent.length ? `<button class="who" data-act="entries" data-pid="${p.id}" aria-label="הרישומים של ${esc(p.name)} במשחק">${who}</button>` : `<span class="who">${who}</span>`}
         <span class="gp num${gp ? '' : ' zero'}">${gp}</span>
         <span class="tot num">${r.total}</span>
         <span class="pm">
           <button class="btn plus primary" data-act="add" data-pid="${p.id}" aria-label="להוסיף נקודות ל${esc(p.name)}">+</button>
-          <button class="btn minus" data-act="take" data-pid="${p.id}" aria-label="להוריד נקודות מ${esc(p.name)}"${gp > 0 ? '' : ' disabled'}>−</button>
+          <button class="btn minus" data-act="take" data-pid="${p.id}" aria-label="להוריד נקודות מ${esc(p.name)}">−</button>
         </span>
       </div>`;
   }
@@ -542,18 +550,32 @@
     const n = R.gameNumber(t, g);
     const played = R.finishedGames(t).length;
     const rows = R.standings(t, true);
+    const dealerId = R.dealerOf(t, g);
+    const last = lastEntry(g);
     return `
       <section class="status">
         <div class="status-top">
           <b class="tour-head">${esc(t.name)}</b>
           <span class="muted">${played ? playedText(played) : 'המשחק הראשון'}</span>
         </div>
-        <div class="game-no">משחק ${n}</div>
+        <div class="game-line">
+          <span class="game-no">משחק ${n}</span>
+          ${dealerId ? `<button class="dealer-btn" data-act="change-dealer" aria-label="שינוי המחלק">מחלק: <b>${esc(playerName(t, dealerId))}</b><span class="edit-ic" aria-hidden="true">✎</span></button>` : ''}
+        </div>
       </section>
       <div class="board">
         <div class="board-head"><span>#</span><span>משתתף</span><span>במשחק</span><span>כללי</span><span></span></div>
-        ${rows.map((r) => boardRow(t, g, r, isLead(rows, r))).join('')}
+        ${rows.map((r) => boardRow(t, g, r, isLead(rows, r), dealerId)).join('')}
       </div>
+      ${last ? `
+      <div class="last-entry">
+        <span class="le-text">הרישום האחרון: <b>${esc(playerName(t, last.pid))}</b> <span class="num${last.n < 0 ? ' neg' : ''}">${signed(last.n)}</span></span>
+        <span class="le-btns">
+          <button class="btn sm" data-act="fix-last">תיקון</button>
+          <button class="btn sm danger" data-act="delete-last">מחיקה</button>
+        </span>
+      </div>
+      <p class="hint">לתיקון רישום קודם: לחיצה על שם המשתתף.</p>` : ''}
       <button class="btn primary big" data-act="open-finish">סיום משחק ${n}</button>
       <div class="row"><button class="btn" data-act="undo"${canUndo(t) ? '' : ' disabled'}>↶ בטל פעולה</button></div>
       ${gamesTableHtml(t)}
@@ -708,18 +730,15 @@
     });
   }
 
-  // Takes back points entered by mistake in the game being played.
+  // Takes points off a participant in the game being played: any amount (a mistake, or a penalty).
   function takeFrom(pid) {
     const t = curTour();
     if (!t) return;
     const name = playerName(t, pid);
-    const max = R.gamePoints(R.currentGame(t), pid);
-    if (max <= 0) return;
     openPad({
       title: `${name} · כמה נקודות להוריד?`,
       okLabel: 'הורד',
       okKind: 'danger',
-      validate: (n) => (n > max ? `אפשר להוריד עד ${max}, כמו מה שנרשם במשחק הזה` : ''),
       onSave: (n) => {
         const tt = curTour();
         if (!tt) return;
@@ -732,6 +751,109 @@
         toast(`${name}: -${n}`);
       }
     });
+  }
+
+  // ---------- fixing what was entered in the game being played ----------
+  // The last entry in a game: { pid, k (which of that participant's entries), n }, or null.
+  function lastEntry(g) {
+    const e = g.points[g.points.length - 1];
+    return e ? { pid: e.pid, k: R.entriesOf(g, e.pid).length - 1, n: e.n } : null;
+  }
+
+  // Opens one entry in the number pad: save a new amount (the sign stays) or delete it.
+  function editEntry(pid, k) {
+    const t = curTour();
+    const g = t && R.currentGame(t);
+    const n = g ? R.entriesOf(g, pid)[k] : null;
+    if (n == null) return;
+    const name = playerName(t, pid);
+    openPad({
+      title: `${name} · תיקון הרישום ${signed(n)}`,
+      value: Math.abs(n),
+      okLabel: 'שמור',
+      okKind: n < 0 ? 'danger' : '',
+      onSave: (v) => {
+        const tt = curTour();
+        if (!tt) return;
+        flashPid = pid;
+        changeTour(tt, (tour) => {
+          const gg = R.currentGame(tour);
+          R.setEntry(gg, pid, k, v);
+          R.touch(tour, gg);
+        });
+        toast(`${name}: ${signed(n < 0 ? -v : v)} במקום ${signed(n)}`);
+        renderEntries();
+      },
+      onDelete: () => deleteEntry(pid, k)
+    });
+  }
+
+  function deleteEntry(pid, k) {
+    const t = curTour();
+    const g = t && R.currentGame(t);
+    const n = g ? R.entriesOf(g, pid)[k] : null;
+    if (n == null) return;
+    flashPid = pid;
+    changeTour(t, (tour) => {
+      const gg = R.currentGame(tour);
+      R.removeEntry(gg, pid, k);
+      R.touch(tour, gg);
+    });
+    toast(`${playerName(t, pid)}: הרישום ${signed(n)} נמחק`);
+    renderEntries();
+  }
+
+  function fixLast(del) {
+    const t = curTour();
+    const last = t && lastEntry(R.currentGame(t));
+    if (!last) return;
+    if (del) deleteEntry(last.pid, last.k);
+    else editEntry(last.pid, last.k);
+  }
+
+  // One participant's entries in the game being played; tapping one opens it for fixing.
+  let entries = null; // { pid, layer }
+
+  function openEntries(pid) {
+    const layer = addLayer('<div class="backdrop" data-act="close-entries"></div><div class="sheet" role="dialog" aria-modal="true" id="entries-sheet"></div>', () => { entries = null; });
+    entries = { pid, layer };
+    renderEntries();
+  }
+
+  function closeEntries() {
+    if (entries) removeLayer(entries.layer);
+  }
+
+  function renderEntries() {
+    if (!entries) return;
+    const t = curTour();
+    const g = t && R.currentGame(t);
+    const ent = g ? R.entriesOf(g, entries.pid) : [];
+    if (!ent.length) { closeEntries(); return; }
+    document.getElementById('entries-sheet').innerHTML = `
+      <h2>${esc(playerName(t, entries.pid))} · משחק ${R.gameNumber(t, g)}</h2>
+      <p class="muted">לחיצה על רישום פותחת אותו לתיקון או למחיקה.</p>
+      <div class="pc-adds entry-list">${ent.map((n, k) => `<button class="add-chip num${n < 0 ? ' neg' : ''}" data-act="entry-edit" data-pid="${entries.pid}" data-k="${k}" aria-label="תיקון ${signed(n)}">${signed(n)}</button>`).join('')}</div>
+      <p class="entry-sum">במשחק: <b class="num">${R.gamePoints(g, entries.pid)}</b></p>
+      <div class="row"><button class="btn" data-act="close-entries">סגור</button></div>`;
+  }
+
+  // The dealer of the game being played; the games after it go on from the new dealer.
+  async function changeDealer() {
+    const t = curTour();
+    const g = t && R.currentGame(t);
+    if (!g) return;
+    const cur = R.dealerOf(t, g);
+    const pid = await ask({
+      title: `מי מחלק במשחק ${R.gameNumber(t, g)}?`,
+      body: 'במשחקים הבאים ממשיכים לפי הסדר מהמחלק הזה.',
+      buttons: t.players.map((p) => ({ label: p.name, value: p.id, kind: p.id === cur ? 'primary' : '' })).concat([{ label: 'ביטול', value: null }]),
+      cancel: null
+    });
+    const tt = curTour();
+    if (!pid || pid === cur || !tt) return;
+    changeTour(tt, (tour) => R.setDealer(tour, R.currentGame(tour), pid));
+    toast('מחלק: ' + playerName(tt, pid));
   }
 
   // ---------- end-of-game sheet ----------
@@ -894,19 +1016,18 @@
   function sheetEdit(pid, k) {
     const value = R.entriesOf(sheet.draft, pid)[k];
     if (value == null) return;
-    const below = 'הנקודות של משתתף במשחק לא יכולות לרדת מתחת לאפס';
     openPad({
       title: `${playerName(sheetTour(), pid)} · תיקון`,
       value: Math.abs(value),
       okLabel: 'שמור',
       onSave: (n) => {
         if (!sheet) return;
-        if (!R.setEntry(sheet.draft, pid, k, n)) { toast(below); return; }
+        if (!R.setEntry(sheet.draft, pid, k, n)) return;
         sheetPointsChanged();
       },
       onDelete: () => {
         if (!sheet) return;
-        if (!R.removeEntry(sheet.draft, pid, k)) { toast(below); return; }
+        if (!R.removeEntry(sheet.draft, pid, k)) return;
         sheetPointsChanged();
       }
     });
@@ -940,7 +1061,9 @@
     const winner = playerName(t, draft.result.winnerId);
     if (isEdit) toast('משחק ' + number + ' עודכן');
     else {
-      toast(`${winner} ניצח במשחק ${number} · מתחילים משחק ${number + 1}`);
+      const next = R.currentGame(t);
+      const dealer = next ? playerName(t, R.dealerOf(t, next)) : '';
+      toast(`${winner} ניצח במשחק ${number} · משחק ${number + 1}${dealer ? ', מחלק: ' + dealer : ''}`);
       window.scrollTo({ top: 0, behavior: 'smooth' });
     }
   }
@@ -1254,11 +1377,18 @@
       case 'go': go(d.to); break;
       case 'new-tour': startSetup(state.lastPlayers); break;
       case 'remove-player': removePlayer(+d.i); break;
+      case 'pick-dealer': view.firstDealer = +d.i; render(); break;
       case 'add-player': view.names.push(''); render(); document.querySelector(`.pname[data-i="${view.names.length - 1}"]`).focus(); break;
       case 'start-tour': startTour(); break;
       case 'open-tour': openTour(d.id); break;
       case 'add': addFor(d.pid); break;
       case 'take': takeFrom(d.pid); break;
+      case 'change-dealer': changeDealer(); break;
+      case 'fix-last': fixLast(false); break;
+      case 'delete-last': fixLast(true); break;
+      case 'entries': openEntries(d.pid); break;
+      case 'entry-edit': editEntry(d.pid, +d.k); break;
+      case 'close-entries': closeEntries(); break;
       case 'undo': undo(); break;
       case 'open-finish': openFinish(); break;
       case 'edit-game': openFinish(d.gid); break;

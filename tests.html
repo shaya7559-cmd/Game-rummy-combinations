@@ -71,27 +71,31 @@
     eq([R.entriesOf(g, 'a'), R.gamePoints(g, 'a')], [[15, 12], 27]);
   });
 
-  test('הורדת נקודות שהוזנו בטעות: עד מה שנרשם במשחק, לא יותר', () => {
+  test('הורדת נקודות: כל סכום, גם מתחת לאפס במשחק', () => {
     const g = R.newGame();
     R.addPoints(g, 'a', 30);
-    eq(R.takePoints(g, 'a', 31), false, 'more than the player has');
-    eq(R.takePoints(g, 'b', 1), false, 'a player with no points');
     eq(R.takePoints(g, 'a', 10), true);
     eq([R.entriesOf(g, 'a'), R.gamePoints(g, 'a')], [[30, -10], 20]);
-    eq(R.takePoints(g, 'a', 20), true);
-    eq(R.gamePoints(g, 'a'), 0);
+    eq(R.takePoints(g, 'a', 50), true, 'more than the player has');
+    eq(R.gamePoints(g, 'a'), -30);
+    eq(R.takePoints(g, 'b', 15), true, 'a player with no points (a penalty)');
+    eq(R.gamePoints(g, 'b'), -15);
+    eq([0, -5, 2.5, '', R.MAX_POINTS + 1].map((n) => R.takePoints(g, 'a', n)), [false, false, false, false, false]);
   });
 
-  test('תיקון ומחיקה של רישום לא מורידים משתתף מתחת לאפס', () => {
+  test('תיקון ומחיקה של רישום: הסימן נשמר, ומותר לרדת מתחת לאפס', () => {
     const g = R.newGame();
     R.addPoints(g, 'a', 30);
     R.takePoints(g, 'a', 20);
-    eq(R.setEntry(g, 'a', 0, 10), false, '10 - 20 < 0');
-    eq(R.setEntry(g, 'a', 1, 5), true, 'a fix keeps the sign');
-    eq(R.entriesOf(g, 'a'), [30, -5]);
-    eq(R.removeEntry(g, 'a', 0), false, 'removing the 30 would leave -5');
-    eq(R.removeEntry(g, 'a', 1), true);
-    eq(R.entriesOf(g, 'a'), [30]);
+    R.addPoints(g, 'b', 15);
+    eq(R.setEntry(g, 'a', 1, 5), true);
+    eq(R.entriesOf(g, 'a'), [30, -5], 'a fix keeps the sign');
+    eq(R.setEntry(g, 'a', 0, 0), false, 'a fix must be above 0');
+    eq(R.setEntry(g, 'a', 2, 5), false, 'no such entry');
+    eq(R.removeEntry(g, 'a', 0), true);
+    eq([R.entriesOf(g, 'a'), R.gamePoints(g, 'a')], [[-5], -5]);
+    eq(R.entriesOf(g, 'b'), [15], 'other entries untouched');
+    eq(g.points.map((e) => e.pid), ['a', 'b'], 'order of entry kept');
   });
 
   test('המנצח הוא האחרון שקיבל נקודות, וטעות שהורדה לא נחשבת', () => {
@@ -106,6 +110,21 @@
     eq(R.lastScorer(g), 'a', 'c has nothing left in this game');
     R.addPoints(g, 'b', 5);
     eq(R.lastScorer(g), 'b');
+  });
+
+  test('המנצח: נקודות שהורדו מבטלות את הרישום האחרון של אותו משתתף, וקנס לא משנה את המנצח', () => {
+    const g = R.newGame();
+    R.addPoints(g, 'a', 10);
+    R.addPoints(g, 'b', 20);
+    R.addPoints(g, 'a', 30); // a mistake: a still has 10 from before
+    R.takePoints(g, 'a', 30);
+    eq(R.lastScorer(g), 'b', 'the cancelled +30 does not make a the winner');
+    const h = R.newGame();
+    R.addPoints(h, 'a', 30);
+    R.takePoints(h, 'b', 50); // a penalty for b
+    eq(R.lastScorer(h), 'a');
+    R.takePoints(h, 'a', 10); // part of a's points: a still went out last
+    eq(R.lastScorer(h), 'a');
   });
 
   test('סוף משחק: המנצח שומר את מה שצבר, השאר מפסידים את מה שנשאר ביד או 70', () => {
@@ -143,6 +162,40 @@
     eq(R.standings(t, false).map((r) => r.player.name), ['שי', 'רון', 'דנה'], 'without the open game');
     R.takePoints(g, pid(t, 'דנה'), 15);
     eq(R.standings(t, true).map((r) => [r.player.name, r.place]), [['שי', 1], ['דנה', 2], ['רון', 3]]);
+  });
+
+  test('מחלק: הראשון שנבחר, ובכל משחק הבא המשתתף הבא לפי הסדר', () => {
+    const t = R.newTournament('בית', ['שי', 'דנה', 'רון'], 1);
+    const dealer = () => R.playerById(t, R.dealerOf(t, R.currentGame(t))).name;
+    eq(dealer(), 'דנה', 'chosen when the tournament starts');
+    play(t, 0, [0, 5, 5]);
+    eq(dealer(), 'רון');
+    play(t, 0, [0, 5, 5]);
+    eq(dealer(), 'שי', 'back to the first seat');
+    const x = R.newTournament('x', ['א', 'ב']);
+    eq(x.games[0].dealerId, x.players[0].id, 'the first participant by default');
+  });
+
+  test('שינוי מחלק במשחק הנוכחי, והמשחקים הבאים ממשיכים ממנו; משתתף חדש נכנס לסבב', () => {
+    const t = R.newTournament('בית', ['א', 'ב', 'ג']);
+    const g = R.currentGame(t);
+    eq(R.setDealer(t, g, 'nobody'), false);
+    eq(R.setDealer(t, g, t.players[2].id), true);
+    eq(R.dealerOf(t, g), t.players[2].id);
+    play(t, 0, [0, 5, 5]);
+    eq(R.dealerOf(t, R.currentGame(t)), t.players[0].id, 'after ג comes א');
+    R.addPlayer(t, 'ד');
+    play(t, 0, [0, 5, 5, 5]);
+    play(t, 0, [0, 5, 5, 5]);
+    play(t, 0, [0, 5, 5, 5]);
+    eq(R.playerById(t, R.dealerOf(t, R.currentGame(t))).name, 'ד', 'the new participant deals after ג');
+    // games saved without a dealer count on from the last one that has one
+    const u = R.newTournament('ישן', ['א', 'ב', 'ג']);
+    play(u, 0, [0, 5, 5]);
+    u.games.forEach((x) => delete x.dealerId);
+    eq(R.dealerOf(u, R.currentGame(u)), u.players[1].id, 'by game number');
+    u.games[0].dealerId = u.players[2].id;
+    eq(R.dealerOf(u, R.currentGame(u)), u.players[0].id, 'from the last game that has a dealer');
   });
 
   test('שוויון בניקוד: אותו מקום, וקודם מי שניצח יותר', () => {
@@ -265,6 +318,17 @@
     eq([same.changed, same.ahead], [false, false]);
   });
 
+  test('איחוד: שינוי מחלק בטלפון אחד מגיע לשני', () => {
+    const a = R.newTournament('בית', ['א', 'ב', 'ג']);
+    const b = JSON.parse(JSON.stringify(a));
+    const g = R.currentGame(b);
+    R.setDealer(b, g, b.players[2].id);
+    g.updatedAt = later(g.updatedAt, 1000);
+    const m = TT.mergeTournament(a, b);
+    eq(m.changed, true, 'the change is noticed');
+    eq(R.dealerOf(m.tournament, R.currentGame(m.tournament)), a.players[2].id);
+  });
+
   test('טורניר שנמחק נשאר מחוק גם אחרי איחוד עם עותק ישן', () => {
     const t = R.newTournament('בית', ['א', 'ב']);
     const old = JSON.parse(JSON.stringify(t));
@@ -332,6 +396,8 @@
     eq(byName(a, R.wins(a)), { 'שי': 1, 'דנה': 2 });
     eq(byName(a, R.totals(a, true)), { 'שי': 0, 'דנה': 53 }, 'the open game keeps its points');
     eq(R.currentGame(a).id, 'e2-2');
+    const dealers = a.games.map((g) => R.playerById(a, g.dealerId).name);
+    eq(dealers, ['שי', 'דנה', 'שי', 'דנה'], 'the dealer of every game, moving one seat each round');
     const b = TT.find(list, 'tB');
     ok(b.finishedAt, 'an archived tournament becomes finished');
     eq(b.winnerIds.map((id) => R.playerById(b, id).name), ['רון']);

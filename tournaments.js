@@ -41,7 +41,7 @@
   function gameSig(g) {
     var r = g.result;
     var hands = r && r.hands ? Object.keys(r.hands).sort().map(function (k) { return [k, r.hands[k].points, !!r.hands[k].notDown]; }) : null;
-    return [g.id, g.updatedAt || '', g.finishedAt || '', (g.points || []).map(function (e) { return [e.pid, e.n]; }), r ? [r.winnerId, hands] : null];
+    return [g.id, g.updatedAt || '', g.finishedAt || '', g.dealerId || '', (g.points || []).map(function (e) { return [e.pid, e.n]; }), r ? [r.winnerId, hands] : null];
   }
 
   // What two copies are compared by (content, not key order).
@@ -178,6 +178,7 @@
           map[p.id] = pidByName[name];
         });
         var start = Date.parse(ev.createdAt || at) || Date.now();
+        var firstDealer = Number(ev.firstDealer) || 0;
         ev.rounds.forEach(function (r, i) {
           var points = [];
           Object.keys(r.adds || {}).forEach(function (oldPid) {
@@ -187,6 +188,8 @@
           if (!res && (ev.finishedAt || !points.length)) return;
           var created = new Date(start + i).toISOString();
           var g = { id: ev.id + '-' + (i + 1), createdAt: created, updatedAt: ev.updatedAt || created, points: points, result: null };
+          var dealer = ev.players[(firstDealer + i) % ev.players.length]; // the first version moved the dealer one seat each round
+          if (dealer && map[dealer.id]) g.dealerId = map[dealer.id];
           if (res && map[res.closerId]) {
             var hands = {};
             Object.keys(res.entries || {}).forEach(function (oldPid) {

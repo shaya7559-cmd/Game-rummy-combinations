@@ -3,9 +3,10 @@
    and when it ends everyone but the winner loses the cards left in hand (70 if they never went down).
    Tournament = { id, name, createdAt, updatedAt, metaAt, players: [{ id, name, at }], games: [Game],
                   finishedAt?, winnerIds?, deleted? }
-   Game = { id, createdAt, updatedAt, finishedAt?, points: [{ pid, n }],
+   Game = { id, createdAt, updatedAt, finishedAt?, dealerId?, points: [{ pid, n }],
             result: null | { winnerId, hands: { pid: { points, notDown } } } }
-   points keeps the order of entry; n < 0 takes back points entered by mistake.
+   points keeps the order of entry; n < 0 takes points off (a mistake taken back, or a penalty).
+   dealerId = who deals the game; the next game is dealt by the next participant in seat order.
    Scores are never stored: they are always recomputed from what was entered.
    metaAt = when the name, players or finished state last changed (used when merging copies). */
 (function (root) {
@@ -36,11 +37,15 @@
     return { id: uid(), name: cleanName(name), at: at || now() };
   }
 
-  function newTournament(name, names) {
+  // firstDealer = the seat of the participant who deals the first game (default: the first one).
+  function newTournament(name, names, firstDealer) {
     var t = now();
     var tour = { id: uid(), name: cleanName(name), createdAt: t, updatedAt: t, metaAt: t, players: [], games: [] };
     names.forEach(function (n) { tour.players.push(newPlayer(n, t)); });
-    tour.games.push(newGame(t));
+    var g = newGame(t);
+    var first = tour.players[Math.max(0, Number(firstDealer) || 0) % (tour.players.length || 1)];
+    if (first) g.dealerId = first.id;
+    tour.games.push(g);
     return tour;
   }
 
@@ -116,8 +121,39 @@
   function ensureOpenGame(tour) {
     if (tour.finishedAt || tour.deleted || currentGame(tour)) return currentGame(tour);
     var g = newGame();
+    var d = dealerOf(tour, g);
+    if (d) g.dealerId = d;
     tour.games.push(g);
     return g;
+  }
+
+  // ---------- dealer ----------
+  function seatOf(tour, pid) {
+    for (var i = 0; i < tour.players.length; i++) if (tour.players[i].id === pid) return i;
+    return -1;
+  }
+
+  // Who deals a game (a player id). A game without a dealer (e.g. a new one) is dealt by the participant
+  // after the dealer of the game before it, in seat order.
+  function dealerOf(tour, game) {
+    var n = tour.players.length;
+    if (!n) return null;
+    if (game.dealerId && seatOf(tour, game.dealerId) >= 0) return game.dealerId;
+    var i = tour.games.indexOf(game);
+    if (i < 0) i = tour.games.length;
+    for (var j = i - 1; j >= 0; j--) {
+      var s = tour.games[j].dealerId ? seatOf(tour, tour.games[j].dealerId) : -1;
+      if (s >= 0) return tour.players[(s + i - j) % n].id;
+    }
+    return tour.players[i % n].id;
+  }
+
+  // Changes who deals a game; the games after it go on from the new dealer.
+  function setDealer(tour, game, pid) {
+    if (seatOf(tour, pid) < 0) return false;
+    game.dealerId = pid;
+    touch(tour, game);
+    return true;
   }
 
   // Makes a stored tournament safe to use (e.g. one pulled from git or merged from two phones):
@@ -174,9 +210,9 @@
     return true;
   }
 
-  // Takes back points entered by mistake: never more than the player has in this game.
+  // Takes points off a participant (a mistake, or a penalty): any amount, so a game total may go below 0.
   function takePoints(game, pid, n) {
-    if (!validPoints(n) || Number(n) > gamePoints(game, pid)) return false;
+    if (!validPoints(n)) return false;
     game.points.push({ pid: pid, n: -Number(n) });
     return true;
   }
@@ -190,30 +226,36 @@
     return -1;
   }
 
-  // A fix keeps the entry's sign. A player's points in a game never go below 0.
+  // A fix keeps the entry's sign.
   function setEntry(game, pid, k, n) {
     var i = entryIndex(game, pid, k);
     if (i < 0 || !validPoints(n)) return false;
-    var old = game.points[i].n;
-    game.points[i].n = old < 0 ? -Number(n) : Number(n);
-    if (gamePoints(game, pid) < 0) { game.points[i].n = old; return false; }
+    game.points[i].n = game.points[i].n < 0 ? -Number(n) : Number(n);
     return true;
   }
 
   function removeEntry(game, pid, k) {
     var i = entryIndex(game, pid, k);
     if (i < 0) return false;
-    var e = game.points.splice(i, 1)[0];
-    if (gamePoints(game, pid) < 0) { game.points.splice(i, 0, e); return false; }
+    game.points.splice(i, 1);
     return true;
   }
 
-  // The winner is the last player who got points: walking back from the last entry,
-  // the first player with points still standing (a mistake taken back does not count).
+  // The winner is the last player who got points. Points taken off a player first cancel that player's
+  // latest points (a mistake taken back), and an entry cancelled in full does not count.
   function lastScorer(game) {
-    for (var i = game.points.length - 1; i >= 0; i--) {
-      var e = game.points[i];
-      if (e.n > 0 && gamePoints(game, e.pid) > 0) return e.pid;
+    var left = game.points.map(function (e) { return e.n > 0 ? e.n : 0; });
+    game.points.forEach(function (e, i) {
+      var take = e.n < 0 ? -e.n : 0;
+      for (var j = i - 1; j >= 0 && take > 0; j--) {
+        if (game.points[j].pid !== e.pid || left[j] <= 0) continue;
+        var c = Math.min(left[j], take);
+        left[j] -= c;
+        take -= c;
+      }
+    });
+    for (var i = left.length - 1; i >= 0; i--) {
+      if (left[i] > 0) return game.points[i].pid;
     }
     return null;
   }
@@ -377,6 +419,8 @@
     gameNumber: gameNumber,
     findGame: findGame,
     ensureOpenGame: ensureOpenGame,
+    dealerOf: dealerOf,
+    setDealer: setDealer,
     normalize: normalize,
     validPoints: validPoints,
     entriesOf: entriesOf,
