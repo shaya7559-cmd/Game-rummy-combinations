@@ -1,34 +1,17 @@
-/* Rummy Combos — tournaments. Pure functions, no DOM.
-   Every game belongs to one tournament. By default each lineup gets its own tournament;
-   a named tournament (e.g. per place) can be opened at any time.
-   Tournament = { id, name, lineup: key|null, createdAt, updatedAt, archived?, deleted? }
-   A deleted tournament stays as a tombstone so the deletion syncs to other phones. */
+/* Rummy Combos — keeping copies of a tournament in step (two phones, git, a backup file),
+   and converting what the first version saved (evenings made of rounds). Pure functions, no DOM.
+   A deleted tournament stays as a tombstone ({ id, name, deleted: true }) so the deletion reaches other phones. */
 (function (root) {
   'use strict';
 
   var R = root.Rummy;
-  var ST = root.RummyStats;
 
-  function playerNames(game) {
-    return game.players.map(function (p) { return p.name; });
-  }
-
-  // Same people, any seating order.
-  function lineupKey(names) {
-    return names.map(R.cleanName).filter(Boolean).sort().join('|');
+  function clone(o) {
+    return JSON.parse(JSON.stringify(o));
   }
 
   function defaultName(names) {
     return names.map(R.cleanName).filter(Boolean).join(' · ');
-  }
-
-  function make(name, lineup) {
-    var t = new Date().toISOString();
-    return { id: R.uid(), name: R.cleanName(name), lineup: lineup || null, createdAt: t, updatedAt: t, archived: false };
-  }
-
-  function touch(t) {
-    t.updatedAt = new Date().toISOString();
   }
 
   function live(list) {
@@ -40,131 +23,203 @@
     return null;
   }
 
-  function sameName(a, b) {
-    return R.cleanName(a).toLowerCase() === R.cleanName(b).toLowerCase();
-  }
-
   function findByName(list, name) {
-    var hits = live(list).filter(function (t) { return sameName(t.name, name); });
+    var key = R.cleanName(name).toLowerCase();
+    var hits = live(list).filter(function (t) { return t.name.toLowerCase() === key; });
     return hits.length ? hits[0] : null;
   }
 
-  function gamesOf(games, id) {
-    return games.filter(function (g) { return g.tournamentId === id; });
+  function tombstone(t) {
+    var at = R.now();
+    return { id: t.id, name: t.name, createdAt: t.createdAt, updatedAt: at, metaAt: at, deleted: true, players: [], games: [] };
   }
 
-  function nameOf(list, game) {
-    var t = game && find(list, game.tournamentId);
-    return t ? t.name : (game && game.tournamentName) || 'ללא טורניר';
+  function metaSig(t) {
+    return JSON.stringify([t.name, !!t.deleted, t.finishedAt || '', t.winnerIds || []]);
   }
 
-  // The tournament this lineup played in last, or one opened for this lineup and not used yet.
-  // Returns null when the lineup is new (the caller offers a new tournament).
-  function suggest(list, games, names) {
-    var key = lineupKey(names);
-    var open = function (t) { return t && !t.deleted && !t.archived; };
-    var played = ST.finished(games).reverse();
-    for (var i = 0; i < played.length; i++) {
-      if (lineupKey(playerNames(played[i])) !== key) continue;
-      var t = find(list, played[i].tournamentId);
-      if (open(t)) return t;
-    }
-    var byLineup = list.filter(function (x) { return open(x) && x.lineup === key; });
-    return byLineup.length ? byLineup[byLineup.length - 1] : null;
+  function gameSig(g) {
+    var r = g.result;
+    var hands = r && r.hands ? Object.keys(r.hands).sort().map(function (k) { return [k, r.hands[k].points, !!r.hands[k].notDown]; }) : null;
+    return [g.id, g.updatedAt || '', g.finishedAt || '', (g.points || []).map(function (e) { return [e.pid, e.n]; }), r ? [r.winnerId, hands] : null];
   }
 
-  // Gives every game a tournament: games from before tournaments existed are grouped by lineup,
-  // and a tournament known only from a game (e.g. pulled from git) is rebuilt from it.
-  // Returns { games: ids of games that changed, tournaments: whether the list changed }.
-  function ensure(list, games) {
-    var out = { games: [], tournaments: false };
-    games.forEach(function (g) {
-      if (!g) return;
-      if (!g.tournamentId) {
-        var key = lineupKey(playerNames(g));
-        var t = live(list).filter(function (x) { return x.lineup === key; })[0];
-        if (!t) {
-          t = make(defaultName(playerNames(g)), key);
-          t.createdAt = t.updatedAt = g.createdAt || t.createdAt;
-          list.push(t);
-          out.tournaments = true;
-        }
-        g.tournamentId = t.id;
-        g.tournamentName = t.name;
-        out.games.push(g.id);
-        return;
-      }
-      var known = find(list, g.tournamentId);
-      if (!known) {
-        var at = g.createdAt || new Date().toISOString();
-        list.push({ id: g.tournamentId, name: g.tournamentName || defaultName(playerNames(g)), lineup: null, createdAt: at, updatedAt: at, archived: false });
-        out.tournaments = true;
-      } else if (known.deleted) {
-        known.deleted = false;
-        touch(known);
-        out.tournaments = true;
-      }
-    });
-    return out;
+  // What two copies are compared by (content, not key order).
+  function sig(t) {
+    return JSON.stringify([
+      t.metaAt || '', metaSig(t),
+      (t.players || []).map(function (p) { return [p.id, p.name, p.at || '']; }),
+      (t.games || []).map(gameSig)
+    ]);
   }
 
-  // Union by id; the copy updated last wins. changed = the local list was modified,
-  // ahead = the local list has something the incoming one lacks (it should be uploaded).
-  function merge(local, incoming) {
-    var changed = false, ahead = false;
+  // How far along a copy is: a finished game, then more entries.
+  function progress(o) {
+    return (o.result ? 1e6 : 0) + (Array.isArray(o.points) ? o.points.length : 0);
+  }
+
+  // Whether copy x should replace copy have: the later stamp wins. With equal stamps (two changes in the
+  // same millisecond) the copy further along wins, and otherwise a fixed order, so every phone picks the same one.
+  function wins(x, have, stamp) {
+    var a = x[stamp] || '', b = have[stamp] || '';
+    if (a !== b) return a > b;
+    var sx = JSON.stringify(x), sh = JSON.stringify(have);
+    if (sx === sh) return false;
+    if (progress(x) !== progress(have)) return progress(x) > progress(have);
+    return sx > sh;
+  }
+
+  // Union by id; see wins() for which copy is kept.
+  function unionById(a, b, stamp) {
     var map = {};
-    local.forEach(function (t) { map[t.id] = t; });
-    var seen = {};
+    var order = [];
+    a.concat(b).forEach(function (x) {
+      var have = map[x.id];
+      if (!have) { map[x.id] = x; order.push(x.id); }
+      else if (wins(x, have, stamp)) map[x.id] = x;
+    });
+    return order.map(function (id) { return clone(map[id]); });
+  }
+
+  // Two copies of one tournament. The name, the players' names and the finished state come from the copy
+  // whose metaAt is later; each game comes from the copy that changed it last.
+  // changed = the result differs from local; ahead = it differs from remote (it should be uploaded).
+  function mergeTournament(local, remote) {
+    if (!local) return { tournament: R.normalize(clone(remote)), changed: true, ahead: false };
+    if (!remote) return { tournament: local, changed: false, ahead: true };
+    var lm = local.metaAt || '', rm = remote.metaAt || '';
+    var meta = rm > lm || (rm === lm && metaSig(remote) > metaSig(local)) ? remote : local;
+    var out = {
+      id: local.id,
+      name: meta.name,
+      createdAt: [local.createdAt, remote.createdAt].filter(Boolean).sort()[0],
+      updatedAt: [local.updatedAt || '', remote.updatedAt || ''].sort()[1],
+      metaAt: meta.metaAt
+    };
+    if (meta.deleted) {
+      out.deleted = true;
+      out.players = [];
+      out.games = [];
+    } else {
+      if (meta.finishedAt) {
+        out.finishedAt = meta.finishedAt;
+        out.winnerIds = (meta.winnerIds || []).slice();
+      }
+      out.players = unionById(local.players || [], remote.players || [], 'at');
+      out.games = unionById(local.games || [], remote.games || [], 'updatedAt');
+      R.normalize(out);
+    }
+    var s = sig(out);
+    return { tournament: out, changed: s !== sig(local), ahead: s !== sig(remote) };
+  }
+
+  // Merges a list (e.g. from a backup file) into the local one. Returns the new list and the ids that changed.
+  function mergeLists(local, incoming) {
+    var list = local.slice();
+    var changed = [];
+    var added = 0;
     (incoming || []).forEach(function (t) {
       if (!t || !t.id) return;
-      seen[t.id] = true;
-      var have = map[t.id];
-      if (!have || (t.updatedAt || '') > (have.updatedAt || '')) {
-        map[t.id] = t;
-        changed = true;
-      } else if ((have.updatedAt || '') > (t.updatedAt || '')) {
-        ahead = true;
-      }
+      var i = list.findIndex(function (x) { return x.id === t.id; });
+      var m = mergeTournament(i >= 0 ? list[i] : null, t);
+      if (!m.changed) return;
+      if (i >= 0) list[i] = m.tournament;
+      else { list.push(m.tournament); if (!t.deleted) added++; }
+      changed.push(t.id);
     });
-    local.forEach(function (t) { if (!seen[t.id]) ahead = true; });
-    var list = Object.keys(map).map(function (id) { return map[id]; })
-      .sort(function (a, b) { return (a.createdAt || '').localeCompare(b.createdAt || ''); });
-    return { list: list, changed: changed, ahead: ahead };
+    return { list: list, changed: changed, added: added };
   }
 
-  // One row per tournament that is not deleted: evening count, last evening and leader
-  // (most evening wins, then most total points). Most recently played first.
-  function overview(list, games) {
-    var done = ST.finished(games);
-    return live(list).map(function (t) {
-      var own = gamesOf(done, t.id);
-      var sum = own.length ? ST.summary(own) : null;
-      return {
-        tournament: t,
-        games: own.length,
-        lastAt: own.length ? own[own.length - 1].finishedAt : null,
-        leader: sum ? sum.players[0] : null,
-        top: sum ? sum.players.slice(0, 3) : []
-      };
-    }).sort(function (a, b) {
-      return (b.lastAt || b.tournament.createdAt || '').localeCompare(a.lastAt || a.tournament.createdAt || '');
+  // ---------- data saved by the first version ----------
+  // A stable short id, so converting the same data on two phones gives the same ids.
+  function hashId(prefix, s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h * 33) ^ s.charCodeAt(i)) >>> 0;
+    return prefix + h.toString(36);
+  }
+
+  // First version: { history: [evening], current: evening|null, tournaments: [{ id, name, archived }] },
+  // evening = { id, tournamentId, players, rounds: [{ adds: { pid: [n] }, result: { closerId, entries } }] }.
+  // Every round becomes a game of the evening's tournament; evenings disappear.
+  function fromV1(old) {
+    var evenings = (old.history || []).filter(function (e) { return e && Array.isArray(e.rounds) && Array.isArray(e.players); });
+    if (old.current && Array.isArray(old.current.rounds) && Array.isArray(old.current.players)) evenings.push(old.current);
+    evenings.sort(function (a, b) { return (a.createdAt || '').localeCompare(b.createdAt || ''); });
+    var oldTours = {};
+    (old.tournaments || []).forEach(function (t) { if (t && t.id) oldTours[t.id] = t; });
+
+    var groups = {};
+    var order = [];
+    evenings.forEach(function (ev) {
+      var names = ev.players.map(function (p) { return R.cleanName(p.name); });
+      var key = ev.tournamentId || hashId('l', names.slice().sort().join('|'));
+      if (!groups[key]) { groups[key] = { evenings: [], name: ev.tournamentName || defaultName(names) }; order.push(key); }
+      groups[key].evenings.push(ev);
+    });
+    // Tournaments that were opened but never played in.
+    Object.keys(oldTours).forEach(function (id) {
+      if (!groups[id] && !oldTours[id].deleted) { groups[id] = { evenings: [], name: oldTours[id].name }; order.push(id); }
+    });
+
+    return order.map(function (key) {
+      var grp = groups[key];
+      var ot = oldTours[key];
+      var at = (ot && ot.createdAt) || (grp.evenings[0] && grp.evenings[0].createdAt) || R.now();
+      var tour = { id: key, name: (ot && ot.name) || grp.name, createdAt: at, updatedAt: at, metaAt: at, players: [], games: [] };
+      var pidByName = {};
+      grp.evenings.forEach(function (ev) {
+        var map = {};
+        ev.players.forEach(function (p) {
+          var name = R.cleanName(p.name);
+          if (!pidByName[name]) {
+            pidByName[name] = hashId('n', name);
+            tour.players.push({ id: pidByName[name], name: name, at: at });
+          }
+          map[p.id] = pidByName[name];
+        });
+        var start = Date.parse(ev.createdAt || at) || Date.now();
+        ev.rounds.forEach(function (r, i) {
+          var points = [];
+          Object.keys(r.adds || {}).forEach(function (oldPid) {
+            (r.adds[oldPid] || []).forEach(function (n) { if (map[oldPid] && Number(n)) points.push({ pid: map[oldPid], n: Number(n) }); });
+          });
+          var res = r.result;
+          if (!res && (ev.finishedAt || !points.length)) return;
+          var created = new Date(start + i).toISOString();
+          var g = { id: ev.id + '-' + (i + 1), createdAt: created, updatedAt: ev.updatedAt || created, points: points, result: null };
+          if (res && map[res.closerId]) {
+            var hands = {};
+            Object.keys(res.entries || {}).forEach(function (oldPid) {
+              var e = res.entries[oldPid];
+              if (map[oldPid] && e) hands[map[oldPid]] = { points: e.notDown ? 0 : Math.round(Number(e.points) || 0), notDown: !!e.notDown };
+            });
+            g.result = { winnerId: map[res.closerId], hands: hands };
+            g.finishedAt = ev.finishedAt || ev.updatedAt || created;
+          }
+          tour.games.push(g);
+          if ((g.updatedAt || '') > tour.updatedAt) tour.updatedAt = g.updatedAt;
+        });
+      });
+      R.normalize(tour);
+      if (ot && ot.archived && R.finishedGames(tour).length) {
+        R.dropOpenGame(tour);
+        tour.winnerIds = R.tournamentWinners(tour);
+        tour.finishedAt = tour.updatedAt;
+      }
+      return tour;
     });
   }
 
   var RummyTournaments = {
-    lineupKey: lineupKey,
     defaultName: defaultName,
-    make: make,
-    touch: touch,
     live: live,
     find: find,
     findByName: findByName,
-    gamesOf: gamesOf,
-    nameOf: nameOf,
-    suggest: suggest,
-    ensure: ensure,
-    merge: merge,
-    overview: overview
+    tombstone: tombstone,
+    sig: sig,
+    mergeTournament: mergeTournament,
+    mergeLists: mergeLists,
+    fromV1: fromV1
   };
 
   root.RummyTournaments = RummyTournaments;
